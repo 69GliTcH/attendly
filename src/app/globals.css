@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 🌙 Dark Theme Base */
+body {
+  @apply bg-neutral-950 text-white;
+}
+
+/* Smooth UI */
+* {
+  @apply transition-colors duration-150;
+}
+
+.glass {
+  @apply bg-white/10 backdrop-blur-lg border border-white/20;
+}
+
+.glass-strong {
+  @apply bg-white/20 backdrop-blur-xl border border-white/30;
+}
