@@ -17,6 +17,7 @@ export default function GuidePage() {
 
   const [remainingDays, setRemainingDays] = useState(0);
   const [safeWFH, setSafeWFH] = useState(0);
+  const [takenWFH, setTakenWFH] = useState(0);
 
   const [message, setMessage] = useState("");
   const [weeklyData, setWeeklyData] = useState<any[]>([]);
@@ -29,6 +30,7 @@ export default function GuidePage() {
       const all = await getAllAttendance(user.uid);
 
       let wfo = 0;
+      let wfh = 0;
       let leave = 0;
       let holiday = 0;
 
@@ -37,12 +39,13 @@ export default function GuidePage() {
 
         if (d >= start && d <= end) {
           if (r.status === "WFO") wfo++;
+          if (r.status === "WFH") wfh++;
           if (r.status === "LEAVE") leave++;
           if (r.status === "HOLIDAY") holiday++;
         }
       });
 
-      // 🔥 THIS WEEK (Mon → Sun)
+      // 🔥 THIS WEEK
       const today = new Date();
       const dayOfWeek = today.getDay();
       const diff = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
@@ -57,7 +60,6 @@ export default function GuidePage() {
         d.setDate(monday.getDate() + i);
 
         const key = d.toISOString().split("T")[0];
-
         const record = all.find((r: any) => r.date === key);
 
         week.push({
@@ -78,6 +80,7 @@ export default function GuidePage() {
       const remainingWorkingDays = getWorkingDays(today, end).length;
 
       const left = Math.max(required - wfo, 0);
+
       const safeWFHLeft = Math.max(remainingWorkingDays - left, 0);
 
       let msg = "";
@@ -97,10 +100,12 @@ export default function GuidePage() {
       setRequiredWFO(required);
       setDoneWFO(wfo);
       setLeftWFO(left);
+
       setRemainingDays(remainingWorkingDays);
       setSafeWFH(safeWFHLeft);
-      setMessage(msg);
+      setTakenWFH(wfh);
 
+      setMessage(msg);
       setLoading(false);
     };
 
@@ -118,6 +123,8 @@ export default function GuidePage() {
   const progress = requiredWFO
     ? Math.round((doneWFO / requiredWFO) * 100)
     : 0;
+
+  const wfhLeft = Math.max(safeWFH - takenWFH, 0);
 
   const colorMap: any = {
     WFO: "bg-green-500",
@@ -156,20 +163,21 @@ export default function GuidePage() {
           </div>
         </div>
 
-        {/* Core Stats */}
+        {/* WFO */}
         <div className="grid grid-cols-3 gap-3">
-          <Stat label="Required" value={requiredWFO} />
-          <Stat label="Done" value={doneWFO} />
-          <Stat label="Left" value={leftWFO} />
+          <Stat label="WFO Required" value={requiredWFO} />
+          <Stat label="WFO Done" value={doneWFO} />
+          <Stat label="WFO Remaining" value={leftWFO} />
         </div>
 
-        {/* Clear Analytics */}
-        <div className="grid grid-cols-2 gap-3">
-          <Stat label="WFH you can still take" value={safeWFH} />
-          <Stat label="Working days remaining" value={remainingDays} />
+        {/* WFH */}
+        <div className="grid grid-cols-3 gap-3">
+          <Stat label="WFH Available" value={safeWFH} />
+          <Stat label="WFH Taken" value={takenWFH} />
+          <Stat label="WFH Left" value={wfhLeft} />
         </div>
 
-        {/* 🔥 THIS WEEK CHART */}
+        {/* WEEK */}
         <div className="bg-white/5 border border-white/10 rounded-xl p-4">
           <p className="text-xs text-gray-400 mb-3">
             This week
@@ -209,7 +217,7 @@ export default function GuidePage() {
 }
 
 /* Stat */
-function Stat({ label, value }: any) {
+function Stat({ label, value }: { label: string; value: number }) {
   return (
     <div className="p-4 rounded-xl bg-white/5 border border-white/10">
       <p className="text-xs text-gray-400">{label}</p>
