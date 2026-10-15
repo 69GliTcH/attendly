@@ -1,15 +1,20 @@
+
 "use client";
 
 import { useEffect, useState } from "react";
 import { useUserStore } from "@/store/userStore";
-import { setAttendance, getAttendance, Status } from "@/lib/attendance";
+import {
+  setAttendance,
+  getAttendance,
+  getAllAttendance,
+  Status,
+} from "@/lib/attendance";
 import {
   formatDate,
   displayDate,
   getQuarterRange,
   getWorkingDays,
 } from "@/lib/utils";
-import { getAllAttendance } from "@/lib/attendance";
 import { motion } from "framer-motion";
 
 export default function HomePage() {
@@ -30,18 +35,34 @@ export default function HomePage() {
   const { day, weekday } = displayDate(today);
 
   useEffect(() => {
+    let cancelled = false;
+
     const fetchData = async () => {
-      if (!user) return;
+      if (!user) {
+        setLoading(false);
+        return;
+      }
 
-      const data = await getAttendance(user.uid, todayStr);
-      if (data) setStatus(data.status);
+      try {
+        const data = await getAttendance(user.uid, todayStr);
+        if (cancelled) return;
 
-      await calculateStats();
-      setLoading(false);
+        setStatus(data?.status ?? null);
+
+        await calculateStats();
+      } catch (error) {
+        console.error("Failed to load attendance:", error);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     };
 
     fetchData();
-  }, [user]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user, todayStr]);
 
   const calculateStats = async () => {
     if (!user) return;
@@ -49,54 +70,90 @@ export default function HomePage() {
     const { start, end } = getQuarterRange(new Date());
     const all = await getAllAttendance(user.uid);
 
-    const filtered = all.filter((r: any) => {
-      const d = new Date(r.date);
-      return d >= start && d <= new Date();
+    const dateKey = (date: Date) => formatDate(date);
+
+    // Use date strings to avoid timezone-related date comparisons.
+    const startStr = dateKey(start);
+    const endStr = dateKey(end);
+    const todayKey = dateKey(new Date());
+
+    const attendanceMap: Record<string, Status> = {};
+
+    all.forEach((record: any) => {
+      attendanceMap[record.date] = record.status;
     });
 
-    let wfoCount = 0;
-    let wfhCount = 0;
+    // Attendance recorded so far in the current quarter.
+    const filtered = all.filter(
+      (record: any) =>
+        record.date >= startStr && record.date <= todayKey
+    );
 
-    filtered.forEach((r: any) => {
-      if (r.status === "WFO") wfoCount++;
-      if (r.status === "WFH") wfhCount++;
-    });
+    const wfoCount = filtered.filter(
+      (record: any) => record.status === "WFO"
+    ).length;
 
-    const workingDaysDone = wfoCount + wfhCount;
+    const wfhCount = filtered.filter(
+      (record: any) => record.status === "WFH"
+    ).length;
 
-    const ratio = workingDaysDone
-      ? Math.round((wfoCount / workingDaysDone) * 100)
+    const workedDays = wfoCount + wfhCount;
+
+    const ratio = workedDays
+      ? Math.round((wfoCount / workedDays) * 100)
       : 0;
 
     setWfo(wfoCount);
     setWfh(wfhCount);
     setPercent(ratio);
 
-    /* 🔥 Prediction */
-    const workingDaysTotal = getWorkingDays(start, end).length;
-    const criteria = user.attendanceCriteria || 60;
+    // All working days in the quarter, including future weekdays.
+    const quarterDays = getWorkingDays(start, end);
 
-    const requiredWFO = Math.ceil((criteria / 100) * workingDaysTotal);
+    // Exclude recorded LEAVE and HOLIDAY dates from the target.
+    // This assumes getWorkingDays() includes holidays unless marked here.
+    const eligibleDays = quarterDays.filter((date: Date) => {
+      const key = dateKey(date);
+      const dayStatus = attendanceMap[key];
 
-    const today = new Date();
-    const remainingDays = getWorkingDays(today, end).length;
+      return dayStatus !== "LEAVE" && dayStatus !== "HOLIDAY";
+    });
 
-    const needed = requiredWFO - wfoCount;
+    const criteria = user.attendanceCriteria ?? 60;
 
-    if (needed <= 0) {
+    const requiredWFO = Math.ceil(
+      (criteria / 100) * eligibleDays.length
+    );
+
+    // Remaining days must be eligible and not already marked.
+    const remainingDays = eligibleDays.filter((date: Date) => {
+      const key = dateKey(date);
+
+      return key > todayKey && !attendanceMap[key];
+    }).length;
+
+    const needed = Math.max(0, requiredWFO - wfoCount);
+
+    if (needed === 0) {
       setPrediction("You're safe. No extra WFO needed.");
       setRisk("safe");
     } else if (needed > remainingDays) {
-      setPrediction("Target not achievable. High risk.");
+      setPrediction(
+        `Target not achievable with the remaining ${remainingDays} unmarked working days.`
+      );
       setRisk("danger");
     } else if (needed === remainingDays) {
-      setPrediction("You must go WFO every remaining day.");
+      setPrediction("You must go WFO every remaining working day.");
       setRisk("warning");
     } else if (needed > remainingDays / 2) {
-      setPrediction(`Need ${needed} more WFO days this quater. Prioritize office.`);
+      setPrediction(
+        `Need ${needed} more WFO days this quarter. Prioritize office.`
+      );
       setRisk("warning");
     } else {
-      setPrediction(`Need ${needed} more WFO days this quater. You're on track.`);
+      setPrediction(
+        `Need ${needed} more WFO days this quarter. You're on track.`
+      );
       setRisk("safe");
     }
   };
@@ -104,9 +161,13 @@ export default function HomePage() {
   const handleClick = async (newStatus: Status) => {
     if (!user) return;
 
-    await setAttendance(user.uid, todayStr, newStatus);
-    setStatus(newStatus);
-    await calculateStats();
+    try {
+      await setAttendance(user.uid, todayStr, newStatus);
+      setStatus(newStatus);
+      await calculateStats();
+    } catch (error) {
+      console.error("Failed to update attendance:", error);
+    }
   };
 
   const getMessage = () => {
@@ -135,109 +196,74 @@ export default function HomePage() {
   }
 
   return (
-  <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-neutral-950 via-black to-neutral-900 px-4 pb-24">
-
-    <motion.div
-      initial={{ opacity: 0, y: 30 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="w-full max-w-md space-y-6 text-center"
-    >
-
-      {/* 👋 Greeting */}
-      <div>
-        <h1 className="text-white text-xl font-semibold">
-          Hi, {user?.username || "User"} 👋
-        </h1>
-        <p className="text-gray-400 text-sm">
-          Your attendance target is{" "}
-          <span className="text-white font-medium">
-            {user?.attendanceCriteria || 60}%
-          </span>
-        </p>
-      </div>
-
-      {/* Date */}
-      <div>
-        <p className="text-gray-500 text-sm">Today</p>
-        <h1 className="text-4xl text-white">{day}</h1>
-        <p className="text-gray-400">{weekday}</p>
-      </div>
-
-      {/* Progress */}
-      <ProgressRing percent={percent} />
-
-      {/* Stats */}
-      <div>
-        <p className="text-white text-lg font-semibold">{percent}%</p>
-        <p className="text-gray-400 text-sm">
-          {wfo} / {wfo + wfh} office days
-        </p>
-      </div>
-
-      {/* Prediction */}
-      <div className={`p-4 rounded-xl border text-sm ${getRiskStyle()}`}>
-        {prediction}
-      </div>
-
-      {/* Status */}
-      <p className="text-gray-400">{getMessage()}</p>
-
-      {/* Buttons */}
-      <div className="bg-white/10 backdrop-blur-2xl border border-white/10 rounded-2xl p-4">
-        <div className="grid grid-cols-2 gap-3">
-
-          <StatusButton label="WFO" active={status === "WFO"} color="green" onClick={() => handleClick("WFO")} />
-          <StatusButton label="WFH" active={status === "WFH"} color="indigo" onClick={() => handleClick("WFH")} />
-          <StatusButton label="Leave" active={status === "LEAVE"} color="purple" onClick={() => handleClick("LEAVE")} />
-          <StatusButton label="Holiday" active={status === "HOLIDAY"} color="gray" onClick={() => handleClick("HOLIDAY")} />
-
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-neutral-950 via-black to-neutral-900 px-4 pb-24">
+      <motion.div
+        initial={{ opacity: 0, y: 30 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="w-full max-w-md space-y-6 text-center"
+      >
+        <div>
+          <h1 className="text-white text-xl font-semibold">
+            Hi, {user?.username || "User"} 👋
+          </h1>
+          <p className="text-gray-400 text-sm">
+            Your attendance target is{" "}
+            <span className="text-white font-medium">
+              {user?.attendanceCriteria ?? 60}%
+            </span>
+          </p>
         </div>
-      </div>
 
-    </motion.div>
-  </div>
-);
-}
+        <div>
+          <p className="text-gray-500 text-sm">Today</p>
+          <h1 className="text-4xl text-white">{day}</h1>
+          <p className="text-gray-400">{weekday}</p>
+        </div>
 
-/* Ring */
-function ProgressRing({ percent }: any) {
-  const radius = 45;
-  const stroke = 6;
-  const normalizedRadius = radius - stroke * 2;
-  const circumference = normalizedRadius * 2 * Math.PI;
-  const offset = circumference - (percent / 100) * circumference;
+        <ProgressRing percent={percent} />
 
-  return (
-    <div className="flex justify-center relative">
-      <svg height={radius * 2} width={radius * 2}>
-        <circle stroke="rgba(255,255,255,0.08)" fill="transparent" strokeWidth={stroke} r={normalizedRadius} cx={radius} cy={radius} />
-        <circle stroke="white" fill="transparent" strokeWidth={stroke} strokeDasharray={circumference} strokeDashoffset={offset} strokeLinecap="round" r={normalizedRadius} cx={radius} cy={radius} />
-      </svg>
-      <div className="absolute inset-0 flex items-center justify-center text-white text-sm font-semibold">
-        {percent}%
-      </div>
+        <div>
+          <p className="text-white text-lg font-semibold">{percent}%</p>
+          <p className="text-gray-400 text-sm">
+            {wfo} / {wfo + wfh} office days
+          </p>
+        </div>
+
+        <div className={`p-4 rounded-xl border text-sm ${getRiskStyle()}`}>
+          {prediction}
+        </div>
+
+        <p className="text-gray-400">{getMessage()}</p>
+
+        <div className="bg-white/10 backdrop-blur-2xl border border-white/10 rounded-2xl p-4">
+          <div className="grid grid-cols-2 gap-3">
+            <StatusButton
+              label="WFO"
+              active={status === "WFO"}
+              color="green"
+              onClick={() => handleClick("WFO")}
+            />
+            <StatusButton
+              label="WFH"
+              active={status === "WFH"}
+              color="indigo"
+              onClick={() => handleClick("WFH")}
+            />
+            <StatusButton
+              label="Leave"
+              active={status === "LEAVE"}
+              color="purple"
+              onClick={() => handleClick("LEAVE")}
+            />
+            <StatusButton
+              label="Holiday"
+              active={status === "HOLIDAY"}
+              color="gray"
+              onClick={() => handleClick("HOLIDAY")}
+            />
+          </div>
+        </div>
+      </motion.div>
     </div>
-  );
-}
-
-/* Button */
-function StatusButton({ label, active, color, onClick }: any) {
-  const colorMap: any = {
-    green: "bg-green-500 text-white",
-    indigo: "bg-indigo-500 text-white",
-    purple: "bg-purple-500 text-white",
-    gray: "bg-gray-500 text-white",
-  };
-
-  return (
-    <motion.button
-      whileTap={{ scale: 0.95 }}
-      onClick={onClick}
-      className={`p-3 rounded-xl ${
-        active ? colorMap[color] : "bg-white/5 border border-white/10 text-gray-300"
-      }`}
-    >
-      {label}
-    </motion.button>
   );
 }
